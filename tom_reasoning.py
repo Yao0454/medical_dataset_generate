@@ -9,29 +9,29 @@ ToM推理模块 - 严格落地论文1+2核心方案
 import json
 import re
 import time
-from typing import Dict, List, Any, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-from tom_models import (
-    ToMReasoning,
-    MentalState,
-    CausalEvent,
-    TemporalMentalTrajectory,
-    TemporalChainLink,
-    MentalBoundary,
-    DialogueTurn,
-    DoMLevel,
-    TaskType
-)
-from tom_error_detector import ToMErrorDetector
 from config import (
-    config,
     FIRST_ORDER_SIGNALS,
     NEEDS_TOM_SIGNALS,
-    SIMPLE_ACKNOWLEDGMENT_PATTERNS
+    SIMPLE_ACKNOWLEDGMENT_PATTERNS,
+    config,
 )
-from utils import format_dialogue_history, safe_json_loads, APIError
-from logger import get_logger
 from llm_provider import BaseLLMProvider
+from logger import get_logger
+from tom_error_detector import ToMErrorDetector
+from tom_models import (
+    CausalEvent,
+    DialogueTurn,
+    DoMLevel,
+    MentalBoundary,
+    MentalState,
+    TaskType,
+    TemporalChainLink,
+    TemporalMentalTrajectory,
+    ToMReasoning,
+)
+from utils import APIError, format_dialogue_history, safe_json_loads
 
 logger = get_logger()
 
@@ -39,129 +39,172 @@ logger = get_logger()
 class ToMReasoningModule:
     """
     ToM 推理模块
-    
+
     功能：
     - 实现双步骤 ToM 推理
     - 动态时序心智轨迹追踪
     - 错误检测和修正
     """
+
     def __init__(self, llm_provider: BaseLLMProvider):
         """
         初始化 ToM 推理模块
-        
+
         参数：
         - llm_provider: LLM 提供者实例
         """
         self.llm_provider = llm_provider
         self.error_detector = ToMErrorDetector()
         self.trajectory_history: List[TemporalMentalTrajectory] = []
-    
+
     def _determine_adaptive_dom(
         self,
         context: Dict[str, Any],
         dialogue_history: List[DialogueTurn],
-        task_type: str
+        task_type: str,
     ) -> int:
         """
         确定自适应 DoM 水平
-        
+
         参数：
         - context: 上下文信息
         - dialogue_history: 对话历史
         - task_type: 任务类型
-        
+
         返回：
         - int: DoM 水平 (0=零阶, 1=一阶)
         """
         if len(dialogue_history) <= 1:
             return DoMLevel.ZERO_ORDER.value
-        
+
         patient_utterances = [t.content for t in dialogue_history if t.role == "user"]
         if not patient_utterances:
             return DoMLevel.ZERO_ORDER.value
-        
+
         last_utterance = patient_utterances[-1].lower()
-        
-        has_first_order_signal = any(signal in last_utterance for signal in FIRST_ORDER_SIGNALS)
-        
+
+        has_first_order_signal = any(
+            signal in last_utterance for signal in FIRST_ORDER_SIGNALS
+        )
+
         if has_first_order_signal:
             return DoMLevel.FIRST_ORDER.value
-        
-        question_patterns = ['?', 'what', 'why', 'how', '什么', '为什么', '怎么', '如何']
+
+        question_patterns = [
+            "?",
+            "what",
+            "why",
+            "how",
+            "什么",
+            "为什么",
+            "怎么",
+            "如何",
+        ]
         has_question = any(p in last_utterance for p in question_patterns)
-        
+
         if has_question and len(last_utterance) > 20:
             return DoMLevel.FIRST_ORDER.value
-        
+
         if task_type == TaskType.MEDRECON.value:
-            adherence_signals = ['forgot', 'skip', 'stop', 'side effect', '忘记', '漏服', '停药', '副作用']
+            adherence_signals = [
+                "forgot",
+                "skip",
+                "stop",
+                "side effect",
+                "忘记",
+                "漏服",
+                "停药",
+                "副作用",
+            ]
             if any(signal in last_utterance for signal in adherence_signals):
                 return DoMLevel.FIRST_ORDER.value
-        
+
         return DoMLevel.ZERO_ORDER.value
-    
+
     def step1_tom_invocation_decision(
         self,
         context: Dict[str, Any],
         dialogue_history: List[DialogueTurn],
-        task_type: str
+        task_type: str,
     ) -> Tuple[bool, int, str]:
         """
         Step1 ToM 调用决策
-        
+
         参数：
         - context: 上下文信息
         - dialogue_history: 对话历史
         - task_type: 任务类型
-        
+
         返回：
         - Tuple[bool, int, str]: (是否调用ToM, DoM水平, 决策理由)
         """
         if len(dialogue_history) == 0:
-            return True, 0, "Initial consultation: ToM required to establish patient baseline mental state"
-        
+            return (
+                True,
+                0,
+                "Initial consultation: ToM required to establish patient baseline mental state",
+            )
+
         patient_utterances = [t.content for t in dialogue_history if t.role == "user"]
         if not patient_utterances:
             return True, 0, "No patient input: ToM needed for initial assessment"
-        
+
         last_patient_utterance = patient_utterances[-1].strip()
-        
+
         is_simple_acknowledgment = any(
             re.match(pattern, last_patient_utterance, re.IGNORECASE)
             for pattern in SIMPLE_ACKNOWLEDGMENT_PATTERNS
         )
-        
+
         if is_simple_acknowledgment and len(patient_utterances) > 3:
-            return False, 0, "Simple acknowledgment: No ToM needed - patient is responding to information delivery"
-        
+            return (
+                False,
+                0,
+                "Simple acknowledgment: No ToM needed - patient is responding to information delivery",
+            )
+
         dom_level = self._determine_adaptive_dom(context, dialogue_history, task_type)
-        
-        needs_tom = any(signal in last_patient_utterance.lower() for signal in NEEDS_TOM_SIGNALS)
-        
+
+        needs_tom = any(
+            signal in last_patient_utterance.lower() for signal in NEEDS_TOM_SIGNALS
+        )
+
         if needs_tom:
-            return True, dom_level, f"ToM required: Patient utterance contains mental state signals (DoM={dom_level})"
-        
+            return (
+                True,
+                dom_level,
+                f"ToM required: Patient utterance contains mental state signals (DoM={dom_level})",
+            )
+
         if dom_level == DoMLevel.FIRST_ORDER.value:
-            return True, 1, "First-order ToM: Complex patient response requires perspective-taking"
-        
-        return True, 0, "Zero-order ToM: Standard information exchange with mental state tracking"
-    
+            return (
+                True,
+                1,
+                "First-order ToM: Complex patient response requires perspective-taking",
+            )
+
+        return (
+            True,
+            0,
+            "Zero-order ToM: Standard information exchange with mental state tracking",
+        )
+
     def _build_temporal_chain_prompt(
         self,
         dialogue_history: List[DialogueTurn],
         previous_trajectory: Optional[TemporalMentalTrajectory],
         context: Dict[str, Any],
-        dom_level: int
+        dom_level: int,
     ) -> str:
         """
         构建时序链提示
-        
+
         参数：
         - dialogue_history: 对话历史
         - previous_trajectory: 之前的心智轨迹
         - context: 上下文信息
         - dom_level: DoM 水平
-        
+
         返回：
         - str: 时序链提示
         """
@@ -171,7 +214,7 @@ class ToMReasoningModule:
 === ANCHORED HISTORY (Preventing Middle-Loss) ===
 {json.dumps(previous_trajectory.anchored_history[-3:], indent=2, ensure_ascii=False)}
 """
-        
+
         previous_state = ""
         if previous_trajectory and previous_trajectory.mental_state:
             previous_state = f"""
@@ -182,7 +225,7 @@ class ToMReasoningModule:
 - Knowledge Gaps: {previous_trajectory.mental_state.knowledge_gaps}
 - Chain Summary: {previous_trajectory.get_chain_summary()}
 """
-        
+
         temporal_chain_example = """
 TEMPORAL CHAIN REASONING FORMAT (NOT ordinary CoT):
 Turn 1: Doctor asks about symptoms
@@ -197,7 +240,7 @@ Turn 2: Doctor explains possible causes
   → Mental Delta: +emotion("fear"), +knowledge_gap("severity")
   → Evidence: "Is it serious?" → "fear of serious condition"
 """
-        
+
         prompt = f"""You are performing TEMPORAL CHAIN Theory of Mind reasoning for medical consultation.
 
 CRITICAL: This is NOT ordinary Chain-of-Thought. You must use TEMPORAL CHAIN REASONING:
@@ -214,7 +257,7 @@ DoM Level: {dom_level} (0=direct observation, 1=patient's perspective)
 {format_dialogue_history(dialogue_history)}
 
 === PATIENT BACKGROUND ===
-{json.dumps(context.get('patient_info', {}), indent=2, ensure_ascii=False)}
+{json.dumps(context.get("patient_info", {}), indent=2, ensure_ascii=False)}
 
 {temporal_chain_example}
 
@@ -300,80 +343,96 @@ OUTPUT FORMAT (JSON):
 }}
 """
         return prompt
-    
+
     def step2_mental_state_inference(
         self,
         context: Dict[str, Any],
         dialogue_history: List[DialogueTurn],
         dom_level: int,
         task_type: str,
-        previous_trajectory: Optional[TemporalMentalTrajectory]
+        previous_trajectory: Optional[TemporalMentalTrajectory],
     ) -> ToMReasoning:
         """
         Step2 心理状态推理
-        
+
         参数：
         - context: 上下文信息
         - dialogue_history: 对话历史
         - dom_level: DoM 水平
         - task_type: 任务类型
         - previous_trajectory: 之前的心智轨迹
-        
+
         返回：
         - ToMReasoning: ToM 推理结果
-        
+
         异常：
         - APIError: API 错误
         """
         prompt = self._build_temporal_chain_prompt(
             dialogue_history, previous_trajectory, context, dom_level
         )
-        
+
         try:
             response = self.llm_provider.generate_chat(
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=config.llm.max_tokens,
-                temperature=config.llm.temperature
+                temperature=config.llm.temperature,
             )
-            
-            result = safe_json_loads(response.content)
+
+            # 修复：先剥离 Markdown，再尝试原生解析
+            from utils import extract_json_from_response, safe_json_loads
+
+            result = extract_json_from_response(response.content)
+            if not result:
+                result = safe_json_loads(response.content)
+
             if not result:
                 raise APIError("Failed to parse LLM response as JSON")
-            
+
             mental_boundary = MentalBoundary(
                 doctor_known=result.get("mental_boundary", {}).get("doctor_known", []),
-                doctor_unknown=result.get("mental_boundary", {}).get("doctor_unknown", []),
-                patient_known=result.get("mental_boundary", {}).get("patient_known", []),
-                patient_knowledge_gaps=result.get("mental_boundary", {}).get("patient_knowledge_gaps", [])
+                doctor_unknown=result.get("mental_boundary", {}).get(
+                    "doctor_unknown", []
+                ),
+                patient_known=result.get("mental_boundary", {}).get(
+                    "patient_known", []
+                ),
+                patient_knowledge_gaps=result.get("mental_boundary", {}).get(
+                    "patient_knowledge_gaps", []
+                ),
             )
-            
+
             boundary_errors = mental_boundary.validate_separation()
             if boundary_errors:
                 logger.warning(f"Mental boundary validation: {boundary_errors}")
-            
+
             mental_state = MentalState(
                 beliefs=result.get("patient_mental_state", {}).get("beliefs", []),
                 emotions=result.get("patient_mental_state", {}).get("emotions", []),
                 intentions=result.get("patient_mental_state", {}).get("intentions", []),
-                knowledge_gaps=result.get("patient_mental_state", {}).get("knowledge_gaps", [])
+                knowledge_gaps=result.get("patient_mental_state", {}).get(
+                    "knowledge_gaps", []
+                ),
             )
-            
+
             patient_utterance = ""
             for turn in reversed(dialogue_history):
                 if turn.role == "user":
                     patient_utterance = turn.content
                     break
-            
-            errors, corrected_state, corrected_intentions = self.error_detector.detect_and_correct_errors(
-                patient_utterance=patient_utterance,
-                mental_state=mental_state,
-                intentions=result.get("patient_potential_intentions", []),
-                dialogue_history=dialogue_history,
-                patient_info=context.get('patient_info', {}),
-                turn_number=len(dialogue_history),
-                mental_boundary=mental_boundary
+
+            errors, corrected_state, corrected_intentions = (
+                self.error_detector.detect_and_correct_errors(
+                    patient_utterance=patient_utterance,
+                    mental_state=mental_state,
+                    intentions=result.get("patient_potential_intentions", []),
+                    dialogue_history=dialogue_history,
+                    patient_info=context.get("patient_info", {}),
+                    turn_number=len(dialogue_history),
+                    mental_boundary=mental_boundary,
+                )
             )
-            
+
             temporal_chain_links = []
             for chain_item in result.get("temporal_chain", []):
                 link = TemporalChainLink(
@@ -383,36 +442,42 @@ OUTPUT FORMAT (JSON):
                     observation=chain_item.get("observation", ""),
                     inference=chain_item.get("inference", ""),
                     mental_state_delta=chain_item.get("mental_state_delta", {}),
-                    evidence_links=chain_item.get("evidence_links", [])
+                    evidence_links=chain_item.get("evidence_links", []),
                 )
                 temporal_chain_links.append(link)
-            
+
             causal_data = result.get("causal_event", {})
             causal_event = None
             if causal_data.get("trigger_event"):
                 causal_event = CausalEvent(
                     trigger_event=causal_data.get("trigger_event", ""),
                     trigger_type=causal_data.get("trigger_type", ""),
-                    mental_state_before=previous_trajectory.mental_state if previous_trajectory else MentalState(),
+                    mental_state_before=previous_trajectory.mental_state
+                    if previous_trajectory
+                    else MentalState(),
                     mental_state_after=corrected_state,
                     change_description=causal_data.get("change_description", ""),
                     belief_changes=causal_data.get("belief_changes", []),
                     emotion_changes=causal_data.get("emotion_changes", []),
                     intention_changes=causal_data.get("intention_changes", []),
-                    knowledge_gap_changes=causal_data.get("knowledge_gap_changes", [])
+                    knowledge_gap_changes=causal_data.get("knowledge_gap_changes", []),
                 )
-            
+
             anchored_history = []
             if previous_trajectory:
                 anchored_history = previous_trajectory.anchored_history.copy()
-            anchored_history.append({
-                "turn_number": len(dialogue_history),
-                "mental_state_summary": corrected_state.to_dict(),
-                "key_inference": temporal_chain_links[-1].inference if temporal_chain_links else ""
-            })
+            anchored_history.append(
+                {
+                    "turn_number": len(dialogue_history),
+                    "mental_state_summary": corrected_state.to_dict(),
+                    "key_inference": temporal_chain_links[-1].inference
+                    if temporal_chain_links
+                    else "",
+                }
+            )
             if len(anchored_history) > 10:
                 anchored_history = anchored_history[-10:]
-            
+
             trajectory = TemporalMentalTrajectory(
                 turn_number=len(dialogue_history),
                 timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -422,14 +487,14 @@ OUTPUT FORMAT (JSON):
                     "beliefs": causal_data.get("belief_changes", []),
                     "emotions": causal_data.get("emotion_changes", []),
                     "intentions": causal_data.get("intention_changes", []),
-                    "knowledge_gaps": causal_data.get("knowledge_gap_changes", [])
+                    "knowledge_gaps": causal_data.get("knowledge_gap_changes", []),
                 },
                 temporal_chain=temporal_chain_links,
-                anchored_history=anchored_history
+                anchored_history=anchored_history,
             )
-            
+
             self.trajectory_history.append(trajectory)
-            
+
             return ToMReasoning(
                 should_invoke_tom=True,
                 dom_level=dom_level,
@@ -440,9 +505,9 @@ OUTPUT FORMAT (JSON):
                 next_action_strategy=result.get("next_action_strategy", ""),
                 temporal_trajectory=trajectory,
                 tom_errors_detected=errors,
-                temporal_chain_reasoning=temporal_chain_links
+                temporal_chain_reasoning=temporal_chain_links,
             )
-            
+
         except APIError as e:
             logger.error(f"API error in mental state inference: {e}")
             raise
@@ -453,5 +518,5 @@ OUTPUT FORMAT (JSON):
                 dom_level=dom_level,
                 step1_decision_reason=f"Inference error occurred: {str(e)}",
                 mental_boundary=MentalBoundary(),
-                patient_mental_state=MentalState()
+                patient_mental_state=MentalState(),
             )
