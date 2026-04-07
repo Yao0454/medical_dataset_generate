@@ -7,14 +7,13 @@
 """
 
 import json
-import time
-from typing import Dict, List, Any, Optional
+from typing import Any, Dict, List, Optional
 
+from logger import get_logger
 from tom_models import (
-    ToMReasoning,
-    TemporalMentalTrajectory,
     DialogueTurn,
-    MentalState
+    TemporalMentalTrajectory,
+    ToMReasoning,
 )
 from config import config, FORBIDDEN_GENERIC_RESPONSES
 from utils import format_dialogue_history, format_temporal_chain, APIError
@@ -25,11 +24,10 @@ logger = get_logger()
 
 
 class PatientMindSimulator:
-    
     def __init__(self, llm_provider: BaseLLMProvider):
         self.llm_provider = llm_provider
         self.response_history: List[str] = []
-    
+
     def _validate_response_not_generic(self, response: str) -> bool:
         response_stripped = response.strip()
         for forbidden in FORBIDDEN_GENERIC_RESPONSES:
@@ -38,29 +36,32 @@ class PatientMindSimulator:
         if len(response_stripped) < 10:
             return False
         return True
-    
+
     def _build_patient_state_driven_prompt(
         self,
         tom_reasoning: ToMReasoning,
         context: Dict[str, Any],
         dialogue_history: List[DialogueTurn],
         task_type: str,
-        previous_trajectory: Optional[TemporalMentalTrajectory]
+        previous_trajectory: Optional[TemporalMentalTrajectory],
     ) -> str:
-        
+
         current_state = tom_reasoning.patient_mental_state
         trajectory = tom_reasoning.temporal_trajectory
-        
+
         temporal_evolution = ""
         if trajectory and trajectory.temporal_chain:
             temporal_evolution = f"""
 === TEMPORAL MENTAL EVOLUTION ===
 {format_temporal_chain(trajectory.temporal_chain)}
 """
-        
+
         previous_context = ""
         if previous_trajectory and previous_trajectory.mental_state:
             prev_state = previous_trajectory.mental_state
+            changes_from_previous = (
+                trajectory.changes_from_previous if trajectory else {}
+            )
             previous_context = f"""
 === PREVIOUS MENTAL STATE (Continuity Required) ===
 Previous Beliefs: {prev_state.beliefs}
@@ -69,11 +70,11 @@ Previous Intentions: {prev_state.intentions}
 Previous Knowledge Gaps: {prev_state.knowledge_gaps}
 
 CHANGES FROM PREVIOUS:
-- Belief Changes: {trajectory.changes_from_previous.get('beliefs', [])}
-- Emotion Changes: {trajectory.changes_from_previous.get('emotions', [])}
-- Intention Changes: {trajectory.changes_from_previous.get('intentions', [])}
+- Belief Changes: {changes_from_previous.get("beliefs", [])}
+- Emotion Changes: {changes_from_previous.get("emotions", [])}
+- Intention Changes: {changes_from_previous.get("intentions", [])}
 """
-        
+
         causal_context = ""
         if trajectory and trajectory.causal_event:
             causal = trajectory.causal_event
@@ -83,11 +84,15 @@ Trigger Event: {causal.trigger_event}
 What Changed: {causal.change_description}
 This caused: {causal.emotion_changes} emotions, {causal.belief_changes} beliefs
 """
-        
+
         emotion_display_hints = self._get_emotion_display_hints(current_state.emotions)
-        intention_action_hints = self._get_intention_action_hints(current_state.intentions)
-        gap_expression_hints = self._get_gap_expression_hints(current_state.knowledge_gaps)
-        
+        intention_action_hints = self._get_intention_action_hints(
+            current_state.intentions
+        )
+        gap_expression_hints = self._get_gap_expression_hints(
+            current_state.knowledge_gaps
+        )
+
         prompt = f"""You are simulating a REAL PATIENT's mind in a medical consultation.
 Your response MUST be COMPLETELY DRIVEN by the patient's current mental state.
 
@@ -159,72 +164,113 @@ OUTPUT: Just the patient's response (natural, conversational, emotion-reflecting
 The response must be at least 15 characters and show clear mental state reflection.
 """
         return prompt
-    
+
     def _get_emotion_display_hints(self, emotions: List[str]) -> str:
         if not emotions:
             return "No specific emotions detected - respond neutrally but engaged"
-        
+
         hints = []
         emotion_lower = [e.lower() for e in emotions]
-        
-        if any(e in emotion_lower for e in ['anxiety', 'anxious', 'worried', 'nervous', '焦虑', '担心']):
-            hints.append("- Show worry through questions like 'Is this serious?' or 'Should I be concerned?'")
-        if any(e in emotion_lower for e in ['fear', 'afraid', 'scared', '害怕', '恐惧']):
-            hints.append("- Express fear through hesitant speech or asking about worst outcomes")
-        if any(e in emotion_lower for e in ['confusion', 'confused', 'uncertain', '困惑', '不确定']):
-            hints.append("- Show confusion by asking for clarification: 'I'm not sure I understand...'")
-        if any(e in emotion_lower for e in ['frustration', 'frustrated', '沮丧', '沮丧']):
+
+        if any(
+            e in emotion_lower
+            for e in ["anxiety", "anxious", "worried", "nervous", "焦虑", "担心"]
+        ):
+            hints.append(
+                "- Show worry through questions like 'Is this serious?' or 'Should I be concerned?'"
+            )
+        if any(
+            e in emotion_lower for e in ["fear", "afraid", "scared", "害怕", "恐惧"]
+        ):
+            hints.append(
+                "- Express fear through hesitant speech or asking about worst outcomes"
+            )
+        if any(
+            e in emotion_lower
+            for e in ["confusion", "confused", "uncertain", "困惑", "不确定"]
+        ):
+            hints.append(
+                "- Show confusion by asking for clarification: 'I'm not sure I understand...'"
+            )
+        if any(
+            e in emotion_lower for e in ["frustration", "frustrated", "沮丧", "沮丧"]
+        ):
             hints.append("- Show frustration through slightly impatient questions")
-        if any(e in emotion_lower for e in ['relief', 'relieved', 'relieved', '放心', '松了一口气']):
+        if any(
+            e in emotion_lower
+            for e in ["relief", "relieved", "relieved", "放心", "松了一口气"]
+        ):
             hints.append("- Show cautious relief: 'That's good to hear, but...'")
-        if any(e in emotion_lower for e in ['hope', 'hopeful', '希望']):
-            hints.append("- Express hope while seeking confirmation: 'So there's a good chance...?'")
-        
-        return "\n".join(hints) if hints else "- Reflect the detected emotions naturally in speech"
-    
+        if any(e in emotion_lower for e in ["hope", "hopeful", "希望"]):
+            hints.append(
+                "- Express hope while seeking confirmation: 'So there's a good chance...?'"
+            )
+
+        return (
+            "\n".join(hints)
+            if hints
+            else "- Reflect the detected emotions naturally in speech"
+        )
+
     def _get_intention_action_hints(self, intentions: List[str]) -> str:
         if not intentions:
             return "No specific intentions detected - respond to doctor's question"
-        
+
         hints = []
         intention_lower = [i.lower() for i in intentions]
-        
-        if any(i in intention_lower for i in ['understand', 'know', 'understand diagnosis', '了解', '知道']):
+
+        if any(
+            i in intention_lower
+            for i in ["understand", "know", "understand diagnosis", "了解", "知道"]
+        ):
             hints.append("- Ask for explanation: 'Can you explain what that means?'")
-        if any(i in intention_lower for i in ['treatment', 'get treatment', '治疗', '方案']):
+        if any(
+            i in intention_lower for i in ["treatment", "get treatment", "治疗", "方案"]
+        ):
             hints.append("- Ask about next steps: 'What should I do next?'")
-        if any(i in intention_lower for i in ['reassurance', 'seek reassurance', '安心', '确认']):
+        if any(
+            i in intention_lower
+            for i in ["reassurance", "seek reassurance", "安心", "确认"]
+        ):
             hints.append("- Seek confirmation: 'So it's not something serious?'")
-        if any(i in intention_lower for i in ['express concern', 'share worry', '表达担忧']):
+        if any(
+            i in intention_lower for i in ["express concern", "share worry", "表达担忧"]
+        ):
             hints.append("- Share concerns: 'I've been really worried about...'")
-        if any(i in intention_lower for i in ['clarify', 'get clarification', '澄清']):
-            hints.append("- Ask for clarification: 'Could you clarify what you mean by...?'")
-        
-        return "\n".join(hints) if hints else "- Pursue the detected intentions naturally"
-    
+        if any(i in intention_lower for i in ["clarify", "get clarification", "澄清"]):
+            hints.append(
+                "- Ask for clarification: 'Could you clarify what you mean by...?'"
+            )
+
+        return (
+            "\n".join(hints) if hints else "- Pursue the detected intentions naturally"
+        )
+
     def _get_gap_expression_hints(self, gaps: List[str]) -> str:
         if not gaps:
-            return "No knowledge gaps detected - patient understands current information"
-        
+            return (
+                "No knowledge gaps detected - patient understands current information"
+            )
+
         hints = ["How to naturally express these knowledge gaps:"]
-        
+
         for gap in gaps[:3]:
             gap_lower = gap.lower()
-            if 'severity' in gap_lower or 'serious' in gap_lower:
+            if "severity" in gap_lower or "serious" in gap_lower:
                 hints.append("- 'How serious is this condition?'")
-            elif 'cause' in gap_lower or 'why' in gap_lower:
+            elif "cause" in gap_lower or "why" in gap_lower:
                 hints.append("- 'What caused this to happen?'")
-            elif 'treatment' in gap_lower or 'treat' in gap_lower:
+            elif "treatment" in gap_lower or "treat" in gap_lower:
                 hints.append("- 'What are the treatment options?'")
-            elif 'medication' in gap_lower or 'drug' in gap_lower:
+            elif "medication" in gap_lower or "drug" in gap_lower:
                 hints.append("- 'What does this medication do?'")
-            elif 'test' in gap_lower or 'examination' in gap_lower:
+            elif "test" in gap_lower or "examination" in gap_lower:
                 hints.append("- 'What will the test show?'")
-            elif 'prognosis' in gap_lower or 'outcome' in gap_lower:
+            elif "prognosis" in gap_lower or "outcome" in gap_lower:
                 hints.append("- 'What's the expected outcome?'")
             else:
                 hints.append(f"- Express confusion about: {gap}")
-        
+
         return "\n".join(hints)
     
     # _format_temporal_chain 方法已移除，使用 utils.py 中的 format_temporal_chain 函数
@@ -235,7 +281,7 @@ The response must be at least 15 characters and show clear mental state reflecti
         context: Dict[str, Any],
         dialogue_history: List[DialogueTurn],
         task_type: str,
-        previous_trajectory: Optional[TemporalMentalTrajectory]
+        previous_trajectory: Optional[TemporalMentalTrajectory],
     ) -> str:
         
         # 获取完整的 EHR 数据
@@ -287,23 +333,25 @@ Do NOT include meta-commentary or explanations of your reasoning.
                     max_tokens=300,
                     temperature=0.8  # 增加温度以获得更自然的患者响应
                 )
-                
+
                 patient_response = response.content.strip()
                 
                 if not patient_response or len(patient_response) < 10:
                     logger.warning(f"Generated response too short, regenerating (attempt {attempt + 1})")
                     continue
-                
+
                 if patient_response in self.response_history[-3:]:
-                    logger.warning(f"Repetitive response detected, regenerating (attempt {attempt + 1})")
+                    logger.warning(
+                        f"Repetitive response detected, regenerating (attempt {attempt + 1})"
+                    )
                     continue
-                
+
                 self.response_history.append(patient_response)
                 if len(self.response_history) > 20:
                     self.response_history = self.response_history[-20:]
-                
+
                 return patient_response
-                
+
             except Exception as e:
                 logger.error(f"Patient simulation error: {e}")
                 if attempt == max_attempts - 1:

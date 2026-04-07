@@ -6,6 +6,7 @@
 """
 
 import os
+from typing import Dict, List
 
 from llm_provider import BaseLLMProvider, LLMResponse
 from logger import get_logger
@@ -148,7 +149,7 @@ class LocalModelProvider(BaseLLMProvider):
 
     def generate_chat(
         self,
-        messages: list[dict[str, str]],
+        messages: List[Dict[str, str]],
         max_tokens: int = 500,
         temperature: float = 0.7,
         **kwargs,

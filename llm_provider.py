@@ -10,6 +10,7 @@ LLM 提供者模块 - 支持多种 LLM 后端
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Dict, List, Optional, Union
 
 from openai import OpenAI
 
@@ -26,8 +27,8 @@ class LLMResponse:
 
     content: str
     model: str
-    usage: dict[str, int] | None = None
-    finish_reason: str | None = None
+    usage: Optional[Dict[str, int]] = None
+    finish_reason: Optional[str] = None
 
 
 class BaseLLMProvider(ABC):
@@ -56,7 +57,7 @@ class BaseLLMProvider(ABC):
     @abstractmethod
     def generate_chat(
         self,
-        messages: list[dict[str, str]],
+        messages: List[Dict[str, str]],
         max_tokens: int = 500,
         temperature: float = 0.7,
         **kwargs,
@@ -93,8 +94,8 @@ class OpenAIProvider(BaseLLMProvider):
 
     def __init__(
         self,
-        api_key: str | None = None,
-        base_url: str | None = None,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
         model: str = "gpt-4o",
     ):
         """
@@ -123,7 +124,11 @@ class OpenAIProvider(BaseLLMProvider):
         return self._client
 
     def _call_responses_api(
-        self, input_data: str | list, max_tokens: int, temperature: float, **kwargs
+        self,
+        input_data: Union[str, List[Dict[str, str]]],
+        max_tokens: int,
+        temperature: float,
+        **kwargs,
     ) -> LLMResponse:
         """
         统一的内部请求调用方法，兼容单轮文本和多轮对话结构
@@ -193,7 +198,7 @@ class OpenAIProvider(BaseLLMProvider):
 
     def generate_chat(
         self,
-        messages: list[dict[str, str]],
+        messages: List[Dict[str, str]],
         max_tokens: int = 500,
         temperature: float = 0.7,
         **kwargs,

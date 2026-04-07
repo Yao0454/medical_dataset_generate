@@ -6,122 +6,149 @@ ToM目标检查器 - 严格落地论文2核心方案
 废除关键词/最大轮次终止
 """
 
-from typing import Dict, List, Any, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from tom_models import ToMReasoning, DialogueTurn, MentalBoundary
 from config import (
-    config,
-    REQUIRED_INFO_BY_TASK,
     EXPLANATION_INDICATORS,
-    KNOWLEDGE_TRANSFER_INDICATORS
+    KNOWLEDGE_TRANSFER_INDICATORS,
+    REQUIRED_INFO_BY_TASK,
+    config,
 )
 from logger import get_logger
+from tom_models import DialogueTurn, MentalBoundary, ToMReasoning
 
 logger = get_logger()
 
 
 class ToMGoalChecker:
-    
     def check_tom_goal_achieved(
         self,
         tom_reasoning: ToMReasoning,
         dialogue_history: List[DialogueTurn],
         task_type: str,
-        required_info: List[str] = None
+        required_info: Optional[List[str]] = None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
-        
+
         mental_boundary = tom_reasoning.mental_boundary
         thresholds = config.tom_thresholds
-        
+
         doctor_info_completeness = self._calculate_doctor_info_completeness(
             mental_boundary.doctor_known,
             mental_boundary.doctor_unknown,
             dialogue_history,
             task_type,
-            required_info
+            required_info,
         )
-        
+
         patient_gap_coverage = self._calculate_patient_gap_coverage(
-            mental_boundary.patient_knowledge_gaps,
-            dialogue_history
+            mental_boundary.patient_knowledge_gaps, dialogue_history
         )
-        
+
         patient_intentions_addressed = self._check_intentions_addressed(
-            tom_reasoning.patient_potential_intentions,
-            dialogue_history
+            tom_reasoning.patient_potential_intentions, dialogue_history
         )
-        
+
         goal_status = {
-            "doctor_info_complete": doctor_info_completeness >= thresholds.doctor_info_completeness_threshold,
-            "patient_gaps_covered": patient_gap_coverage >= thresholds.patient_gap_coverage_threshold,
+            "doctor_info_complete": doctor_info_completeness
+            >= thresholds.doctor_info_completeness_threshold,
+            "patient_gaps_covered": patient_gap_coverage
+            >= thresholds.patient_gap_coverage_threshold,
             "intentions_addressed": patient_intentions_addressed,
             "doctor_completeness_score": round(doctor_info_completeness, 2),
             "patient_gap_coverage_score": round(patient_gap_coverage, 2),
             "remaining_unknown_info": mental_boundary.doctor_unknown,
             "remaining_knowledge_gaps": mental_boundary.patient_knowledge_gaps,
-            "dialogue_turns": len(dialogue_history)
+            "dialogue_turns": len(dialogue_history),
         }
-        
-        if doctor_info_completeness >= thresholds.doctor_info_completeness_threshold and \
-           patient_gap_coverage >= thresholds.patient_gap_coverage_threshold:
-            logger.info(f"ToM goal achieved: Doctor info {doctor_info_completeness:.0%} complete, "
-                       f"Patient gaps {patient_gap_coverage:.0%} covered")
-            return True, (
+
+        if (
+            doctor_info_completeness >= thresholds.doctor_info_completeness_threshold
+            and patient_gap_coverage >= thresholds.patient_gap_coverage_threshold
+        ):
+            logger.info(
                 f"ToM goal achieved: Doctor info {doctor_info_completeness:.0%} complete, "
                 f"Patient gaps {patient_gap_coverage:.0%} covered"
-            ), goal_status
-        
+            )
+            return (
+                True,
+                (
+                    f"ToM goal achieved: Doctor info {doctor_info_completeness:.0%} complete, "
+                    f"Patient gaps {patient_gap_coverage:.0%} covered"
+                ),
+                goal_status,
+            )
+
         if doctor_info_completeness >= 0.9 and patient_gap_coverage >= 0.6:
-            return True, (
-                f"ToM goal achieved (high info completeness): Doctor info {doctor_info_completeness:.0%} complete, "
-                f"Patient gaps {patient_gap_coverage:.0%} covered"
-            ), goal_status
-        
+            return (
+                True,
+                (
+                    f"ToM goal achieved (high info completeness): Doctor info {doctor_info_completeness:.0%} complete, "
+                    f"Patient gaps {patient_gap_coverage:.0%} covered"
+                ),
+                goal_status,
+            )
+
         if doctor_info_completeness >= 0.7 and patient_gap_coverage >= 0.8:
-            return True, (
-                f"ToM goal achieved (high gap coverage): Doctor info {doctor_info_completeness:.0%} complete, "
-                f"Patient gaps {patient_gap_coverage:.0%} covered"
-            ), goal_status
-        
+            return (
+                True,
+                (
+                    f"ToM goal achieved (high gap coverage): Doctor info {doctor_info_completeness:.0%} complete, "
+                    f"Patient gaps {patient_gap_coverage:.0%} covered"
+                ),
+                goal_status,
+            )
+
         if len(dialogue_history) >= thresholds.max_safety_turns * 2:
             logger.warning(f"Safety limit reached: {len(dialogue_history)} turns")
-            return True, (
-                f"Safety limit reached: {len(dialogue_history)} turns. "
-                f"Doctor info {doctor_info_completeness:.0%} complete, "
-                f"Patient gaps {patient_gap_coverage:.0%} covered"
-            ), goal_status
-        
-        return False, (
-            f"ToM goal not achieved: Doctor info {doctor_info_completeness:.0%} complete "
-            f"(need {thresholds.doctor_info_completeness_threshold:.0%}), "
-            f"Patient gaps {patient_gap_coverage:.0%} covered "
-            f"(need {thresholds.patient_gap_coverage_threshold:.0%})"
-        ), goal_status
-    
+            return (
+                True,
+                (
+                    f"Safety limit reached: {len(dialogue_history)} turns. "
+                    f"Doctor info {doctor_info_completeness:.0%} complete, "
+                    f"Patient gaps {patient_gap_coverage:.0%} covered"
+                ),
+                goal_status,
+            )
+
+        return (
+            False,
+            (
+                f"ToM goal not achieved: Doctor info {doctor_info_completeness:.0%} complete "
+                f"(need {thresholds.doctor_info_completeness_threshold:.0%}), "
+                f"Patient gaps {patient_gap_coverage:.0%} covered "
+                f"(need {thresholds.patient_gap_coverage_threshold:.0%})"
+            ),
+            goal_status,
+        )
+
     def _calculate_doctor_info_completeness(
         self,
         doctor_known: List[str],
         doctor_unknown: List[str],
         dialogue_history: List[DialogueTurn],
         task_type: str,
-        required_info: List[str] = None
+        required_info: Optional[List[str]] = None,
     ) -> float:
         if required_info:
             required_set = set(info.lower() for info in required_info)
         else:
-            task_requirements = REQUIRED_INFO_BY_TASK.get(task_type, REQUIRED_INFO_BY_TASK["diagnosis"])
+            task_requirements = REQUIRED_INFO_BY_TASK.get(
+                task_type, REQUIRED_INFO_BY_TASK["diagnosis"]
+            )
             required_set = set(info.lower() for info in task_requirements["essential"])
-        
+
         dialogue_text = " ".join([t.content.lower() for t in dialogue_history])
-        
+
         covered_count = 0
         for req in required_set:
             req_keywords = req.split()
             if any(kw in dialogue_text for kw in req_keywords):
                 covered_count += 1
-        
-        essential_completeness = covered_count / len(required_set) if required_set else 1.0
-        
+
+        essential_completeness = (
+            covered_count / len(required_set) if required_set else 1.0
+        )
+
         if doctor_unknown:
             unknown_addressed = 0
             for unknown in doctor_unknown:
@@ -131,42 +158,40 @@ class ToMGoalChecker:
             unknown_completeness = unknown_addressed / len(doctor_unknown)
         else:
             unknown_completeness = 1.0
-        
+
         total_known_items = len(doctor_known)
         knowledge_accumulation = min(total_known_items / 5.0, 1.0)
-        
+
         final_score = (
-            essential_completeness * 0.5 +
-            unknown_completeness * 0.3 +
-            knowledge_accumulation * 0.2
+            essential_completeness * 0.5
+            + unknown_completeness * 0.3
+            + knowledge_accumulation * 0.2
         )
-        
+
         return min(final_score, 1.0)
-    
+
     def _calculate_patient_gap_coverage(
-        self,
-        knowledge_gaps: List[str],
-        dialogue_history: List[DialogueTurn]
+        self, knowledge_gaps: List[str], dialogue_history: List[DialogueTurn]
     ) -> float:
         if not knowledge_gaps:
             return 1.0
-        
-        doctor_responses = [t.content for t in dialogue_history if t.role == "assistant"]
+
+        doctor_responses = [
+            t.content for t in dialogue_history if t.role == "assistant"
+        ]
         if not doctor_responses:
             return 0.0
-        
+
         doctor_text = " ".join(doctor_responses).lower()
-        
+
         explanation_count = sum(
-            1 for indicator in EXPLANATION_INDICATORS 
-            if indicator in doctor_text
+            1 for indicator in EXPLANATION_INDICATORS if indicator in doctor_text
         )
-        
+
         knowledge_transfer_count = sum(
-            1 for indicator in KNOWLEDGE_TRANSFER_INDICATORS 
-            if indicator in doctor_text
+            1 for indicator in KNOWLEDGE_TRANSFER_INDICATORS if indicator in doctor_text
         )
-        
+
         gap_keywords_addressed = set()
         for gap in knowledge_gaps:
             gap_lower = gap.lower()
@@ -175,41 +200,57 @@ class ToMGoalChecker:
                 if len(keyword) > 3 and keyword in doctor_text:
                     gap_keywords_addressed.add(gap)
                     break
-        
+
         explanation_score = min(explanation_count / 3.0, 1.0)
         transfer_score = min(knowledge_transfer_count / 2.0, 1.0)
-        gap_address_score = len(gap_keywords_addressed) / len(knowledge_gaps) if knowledge_gaps else 1.0
-        
-        final_score = (
-            explanation_score * 0.3 +
-            transfer_score * 0.3 +
-            gap_address_score * 0.4
+        gap_address_score = (
+            len(gap_keywords_addressed) / len(knowledge_gaps) if knowledge_gaps else 1.0
         )
-        
+
+        final_score = (
+            explanation_score * 0.3 + transfer_score * 0.3 + gap_address_score * 0.4
+        )
+
         return min(final_score, 1.0)
-    
+
     def _check_intentions_addressed(
-        self,
-        intentions: List[str],
-        dialogue_history: List[DialogueTurn]
+        self, intentions: List[str], dialogue_history: List[DialogueTurn]
     ) -> bool:
         if not intentions:
             return True
-        
-        doctor_responses = [t.content.lower() for t in dialogue_history if t.role == "assistant"]
+
+        doctor_responses = [
+            t.content.lower() for t in dialogue_history if t.role == "assistant"
+        ]
         if not doctor_responses:
             return False
-        
+
         doctor_text = " ".join(doctor_responses)
-        
+
         intention_keywords = {
-            'understand': ['explain', 'mean', 'because', 'reason', 'cause'],
-            'treatment': ['treat', 'medication', 'therapy', 'prescription', 'recommend'],
-            'reassurance': ['not serious', 'common', 'treatable', 'good prognosis', 'don\'t worry'],
-            'diagnosis': ['diagnosis', 'condition', 'you have', 'this is'],
-            'concern': ['understand your concern', 'i hear you', 'it\'s normal to worry']
+            "understand": ["explain", "mean", "because", "reason", "cause"],
+            "treatment": [
+                "treat",
+                "medication",
+                "therapy",
+                "prescription",
+                "recommend",
+            ],
+            "reassurance": [
+                "not serious",
+                "common",
+                "treatable",
+                "good prognosis",
+                "don't worry",
+            ],
+            "diagnosis": ["diagnosis", "condition", "you have", "this is"],
+            "concern": [
+                "understand your concern",
+                "i hear you",
+                "it's normal to worry",
+            ],
         }
-        
+
         addressed_count = 0
         for intention in intentions:
             intention_lower = intention.lower()
@@ -218,45 +259,48 @@ class ToMGoalChecker:
                     if any(kw in doctor_text for kw in keywords):
                         addressed_count += 1
                         break
-        
+
         return addressed_count >= len(intentions) * 0.5
-    
+
     def get_missing_info_summary(
-        self,
-        tom_reasoning: ToMReasoning,
-        task_type: str
+        self, tom_reasoning: ToMReasoning, task_type: str
     ) -> Dict[str, List[str]]:
-        task_requirements = REQUIRED_INFO_BY_TASK.get(task_type, REQUIRED_INFO_BY_TASK["diagnosis"])
-        
+        task_requirements = REQUIRED_INFO_BY_TASK.get(
+            task_type, REQUIRED_INFO_BY_TASK["diagnosis"]
+        )
+
         return {
             "essential_missing": [
-                info for info in task_requirements["essential"]
+                info
+                for info in task_requirements["essential"]
                 if info.lower() not in " ".join(tom_reasoning.doctor_known_info).lower()
             ],
             "doctor_unknown": tom_reasoning.doctor_unknown_info,
-            "patient_gaps": tom_reasoning.patient_knowledge_gaps
+            "patient_gaps": tom_reasoning.patient_knowledge_gaps,
         }
-    
+
     def estimate_turns_remaining(
         self,
         tom_reasoning: ToMReasoning,
         dialogue_history: List[DialogueTurn],
-        task_type: str
+        task_type: str,
     ) -> int:
         goal_achieved, _, goal_status = self.check_tom_goal_achieved(
             tom_reasoning, dialogue_history, task_type
         )
-        
+
         if goal_achieved:
             return 0
-        
+
         thresholds = config.tom_thresholds
         doctor_score = goal_status["doctor_completeness_score"]
         patient_score = goal_status["patient_gap_coverage_score"]
-        
-        doctor_gap = max(0, thresholds.doctor_info_completeness_threshold - doctor_score)
+
+        doctor_gap = max(
+            0, thresholds.doctor_info_completeness_threshold - doctor_score
+        )
         patient_gap = max(0, thresholds.patient_gap_coverage_threshold - patient_score)
-        
+
         estimated_turns = int((doctor_gap + patient_gap) * 10)
-        
+
         return max(1, min(estimated_turns, 5))

@@ -9,32 +9,27 @@ import json
 import os
 import re
 import time
-from typing import Dict, List, Any, Optional, Tuple
-from dataclasses import asdict
 from contextlib import contextmanager
+from dataclasses import asdict
+from typing import Any, Dict, List, Optional, Tuple
 
 from tom_models import (
-    ToMReasoning,
-    MentalState,
     DialogueTurn,
-    TargetFormat,
-    TemporalMentalTrajectory,
     MentalBoundary,
-    TaskType
+    MentalState,
+    TargetFormat,
+    TaskType,
+    TemporalMentalTrajectory,
+    ToMReasoning,
 )
 from tom_reasoning import ToMReasoningModule
-from patient_simulator import PatientMindSimulator
-from tom_goal_checker import ToMGoalChecker
-from config import config
 from utils import (
+    ConfigurationError,
+    ValidationError,
+    build_tom_annotation,
     format_dialogue_history,
     format_temporal_chain,
-    validate_api_key,
-    build_tom_annotation,
-    ConfigurationError,
-    ValidationError
 )
-from logger import get_logger
 
 logger = get_logger()
 
@@ -46,7 +41,7 @@ def open_jsonl_files(output_dir: str, task_types: List[str]):
         os.makedirs(output_dir, exist_ok=True)
         for task in task_types:
             file_path = os.path.join(output_dir, f"{task}_tom_dataset.jsonl")
-            files[task] = open(file_path, 'w', encoding='utf-8')
+            files[task] = open(file_path, "w", encoding="utf-8")
         yield files
     finally:
         for f in files.values():
@@ -54,17 +49,16 @@ def open_jsonl_files(output_dir: str, task_types: List[str]):
 
 
 class MedicalDatasetGenerator:
-    
     def __init__(
         self,
         provider: str = "openai",
-        api_key: str = None,
-        base_url: str = None,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
         model: str = "gpt-4",
-        local_model_path: str = None,
+        local_model_path: Optional[str] = None,
         device: str = "auto",
         load_in_8bit: bool = False,
-        load_in_4bit: bool = False
+        load_in_4bit: bool = False,
     ):
         self.config = Config.from_args(
             provider=provider,
@@ -72,11 +66,13 @@ class MedicalDatasetGenerator:
             base_url=base_url,
             model=model,
             local_model_path=local_model_path,
-            device=device
+            device=device,
+            load_in_8bit=load_in_8bit,
+            load_in_4bit=load_in_4bit,
         )
-        
+
         self.llm_provider = self.config.create_llm_provider()
-        
+
         self.tom_module = ToMReasoningModule(self.llm_provider)
         self.patient_simulator = PatientMindSimulator(self.llm_provider)
         self.goal_checker = ToMGoalChecker()
@@ -87,9 +83,9 @@ class MedicalDatasetGenerator:
         context: Dict[str, Any],
         dialogue_history: List[DialogueTurn],
         tom_reasoning: ToMReasoning,
-        task_type: str
+        task_type: str,
     ) -> str:
-        
+
         task_config = self.config.task_configs.get(task_type)
         if not task_config:
             raise ValidationError(f"Unknown task type: {task_type}")
@@ -138,7 +134,7 @@ Based on the patient's EHR data and the dialogue history, you must:
 OUTPUT: Your response to the patient (natural, empathetic, ToM-driven)
 Do NOT include meta-commentary or explanations of your reasoning.
 """
-        
+
         try:
             response = self.llm_provider.generate_chat(
                 messages=[{"role": "user", "content": prompt}],
@@ -159,12 +155,12 @@ Do NOT include meta-commentary or explanations of your reasoning.
         self,
         ehr_data: Dict[str, Any],
         task_type: str,
-        max_turns: int = None
+        max_turns: Optional[int] = None,
     ) -> Tuple[List[DialogueTurn], List[ToMReasoning]]:
-        
+
         if max_turns is None:
             max_turns = self.config.tom_thresholds.max_dialogue_turns
-        
+
         dialogue = []
         tom_reasonings = []
         
@@ -173,7 +169,7 @@ Do NOT include meta-commentary or explanations of your reasoning.
             "ehr_data": ehr_data,
             "input_text": ehr_data.get("input", "")
         }
-        
+
         previous_trajectory = None
         
         # 使用 LLM 生成初始医生开场
@@ -207,7 +203,7 @@ OUTPUT: Your opening question to the patient (natural, empathetic, focused on th
         should_invoke, dom_level, decision_reason = self.tom_module.step1_tom_invocation_decision(
             context, dialogue, task_type
         )
-        
+
         if should_invoke:
             tom_reasoning = self.tom_module.step2_mental_state_inference(
                 context, dialogue, dom_level, task_type, previous_trajectory
@@ -221,26 +217,26 @@ OUTPUT: Your opening question to the patient (natural, empathetic, focused on th
                     doctor_known=["patient is here for consultation"],
                     doctor_unknown=["symptoms", "history"],
                     patient_known=[],
-                    patient_knowledge_gaps=["understanding of condition"]
+                    patient_knowledge_gaps=["understanding of condition"],
                 ),
                 patient_mental_state=MentalState(
                     beliefs=["has health concern"],
                     emotions=["concern"],
                     intentions=["seek medical help"],
-                    knowledge_gaps=["understanding of condition"]
-                )
+                    knowledge_gaps=["understanding of condition"],
+                ),
             )
-        
+
         tom_reasonings.append(tom_reasoning)
         dialogue[-1].tom_reasoning = tom_reasoning
         dialogue[-1].mental_state_at_turn = tom_reasoning.patient_mental_state
-        
+
         if tom_reasoning.temporal_trajectory:
             previous_trajectory = tom_reasoning.temporal_trajectory
-        
+
         task_config = self.config.task_configs.get(task_type)
         required_info = task_config.required_info if task_config else []
-        
+
         for turn_num in range(1, max_turns):
             # 生成患者响应
             patient_response = self.patient_simulator.generate_patient_response(
@@ -269,11 +265,13 @@ OUTPUT: Your opening question to the patient (natural, empathetic, focused on th
                     dom_level=0,
                     step1_decision_reason=decision_reason,
                     mental_boundary=MentalBoundary(),
-                    patient_mental_state=previous_trajectory.mental_state.copy() if previous_trajectory and previous_trajectory.mental_state else MentalState()
+                    patient_mental_state=previous_trajectory.mental_state.copy()
+                    if previous_trajectory and previous_trajectory.mental_state
+                    else MentalState(),
                 )
-            
+
             tom_reasonings.append(tom_reasoning)
-            
+
             if tom_reasoning.temporal_trajectory:
                 previous_trajectory = tom_reasoning.temporal_trajectory
             
@@ -459,9 +457,7 @@ Subdepartment: Cardiovascular Medicine
             return ("Internal Medicine", "General Internal Medicine")
     
     def generate_single_sample(
-        self,
-        ehr_data: Dict,
-        task_type: str
+        self, ehr_data: Dict, task_type: str
     ) -> Optional[TargetFormat]:
         
         # 直接使用完整的 EHR 数据，不再手动提取患者信息
@@ -472,29 +468,45 @@ Subdepartment: Cardiovascular Medicine
         
         if not dialogue:
             return None
-        
+
         disease = self.extract_disease_from_ehr(ehr_data)
         department, subdepartment = self.determine_department(ehr_data, disease)
-        
+
         prompt = []
         tom_annotations = []
-        
+
+        # 修复：注入系统提示词与格式要求
+        task_config = self.config.task_configs.get(task_type)
+        system_msg = task_config.system_prompt if task_config else ""
+        system_msg += "\n\nResponse Format:\n<think> [Your reasoning] </think>\n<answer> [Your reply] </answer>"
+
+        prompt.append({"content": system_msg, "role": "system"})
+
         for i, turn in enumerate(dialogue):
-            prompt.append({
-                "content": turn.content,
-                "role": turn.role
-            })
-            
+            content = turn.content
+
+            # 修复：如果是医生的轮次，强制拼接大模型的内部ToM状态作为 <think> 输出
+            if turn.role == "assistant" and turn.tom_reasoning:
+                reasoning = turn.tom_reasoning
+                think_content = (
+                    f"Step1 Decision: ToM invoked, DoM Level: {reasoning.dom_level}\n"
+                    f"Patient State - Emotions: {reasoning.patient_mental_state.emotions}, Gaps: {reasoning.patient_mental_state.knowledge_gaps}\n"
+                    f"Strategy: {reasoning.next_action_strategy}"
+                )
+                content = f"<think>\n{think_content}\n</think>\n<answer>\n{turn.content}\n</answer>"
+
+            prompt.append({"content": content, "role": turn.role})
+
             annotation = build_tom_annotation(i, turn)
             if annotation:
                 tom_annotations.append(annotation)
-        
+
         ability_map = {
             TaskType.DIAGNOSIS.value: "medical_diagnosis_with_tom",
             TaskType.MEDRECON.value: "medication_reconciliation_with_tom",
-            TaskType.PRESCRIPTIONS.value: "prescription_writing_with_tom"
+            TaskType.PRESCRIPTIONS.value: "prescription_writing_with_tom",
         }
-        
+
         return TargetFormat(
             data_source="ehr_bench_tom_v2",
             topic=disease,
@@ -503,67 +515,85 @@ Subdepartment: Cardiovascular Medicine
             disease=disease,
             prompt=prompt,
             ability=ability_map[task_type],
-            reward_model={
-                "ground_truth": disease,
-                "style": "tom_dialogue_temporal"
-            },
-            tom_annotations=tom_annotations
+            reward_model={"ground_truth": disease, "style": "tom_dialogue_temporal"},
+            tom_annotations=tom_annotations,
         )
-    
+
     def process_ehr_file(
         self,
         input_file: str,
         output_dir: str,
-        task_types: List[str] = None,
-        max_samples: int = None,
-        delay: float = None
+        task_types: Optional[List[str]] = None,
+        max_samples: Optional[int] = None,
+        delay: Optional[float] = None,
     ):
-        
+
         if task_types is None:
-            task_types = [TaskType.DIAGNOSIS.value, TaskType.MEDRECON.value, TaskType.PRESCRIPTIONS.value]
-        
+            task_types = [
+                TaskType.DIAGNOSIS.value,
+                TaskType.MEDRECON.value,
+                TaskType.PRESCRIPTIONS.value,
+            ]
+
         if delay is None:
             delay = self.config.llm.delay
         
         with open_jsonl_files(output_dir, task_types) as output_files:
-            with open(input_file, 'r', encoding='utf-8') as f:
+            with open(input_file, "r", encoding="utf-8") as f:
                 for idx, line in enumerate(f):
                     if max_samples and idx >= max_samples:
                         break
-                    
+
                     try:
                         ehr_data = json.loads(line.strip())
                         logger.info(f"Processing sample {idx + 1}...")
-                        logger.info(f"Chief Complaint: {self.extract_patient_info(ehr_data).get('chief_complaint', 'Unknown')}")
-                        
+                        logger.info(
+                            f"Chief Complaint: {self.extract_patient_info(ehr_data).get('chief_complaint', 'Unknown')}"
+                        )
+
                         for task_type in task_types:
-                            logger.info(f"[{task_type.upper()}] Generating ToM-based dialogue...")
+                            logger.info(
+                                f"[{task_type.upper()}] Generating ToM-based dialogue..."
+                            )
                             sample = self.generate_single_sample(ehr_data, task_type)
-                            
+
                             if sample:
                                 output_files[task_type].write(
-                                    json.dumps(asdict(sample), ensure_ascii=False) + '\n'
+                                    json.dumps(asdict(sample), ensure_ascii=False)
+                                    + "\n"
                                 )
-                                logger.info(f"[{task_type.upper()}] Generated {len(sample.prompt)} dialogue turns")
-                                logger.info(f"[{task_type.upper()}] ToM annotations: {len(sample.tom_annotations)}")
-                                
+                                logger.info(
+                                    f"[{task_type.upper()}] Generated {len(sample.prompt)} dialogue turns"
+                                )
+                                logger.info(
+                                    f"[{task_type.upper()}] ToM annotations: {len(sample.tom_annotations)}"
+                                )
+
                                 if sample.tom_annotations:
                                     errors_count = sum(
-                                        len(ann.get('tom_errors_detected', [])) 
+                                        len(ann.get("tom_errors_detected", []))
                                         for ann in sample.tom_annotations
                                     )
-                                    logger.info(f"[{task_type.upper()}] ToM errors detected & corrected: {errors_count}")
-                                    
-                                    dom_levels = [ann.get('step1_decision', {}).get('dom_level', 0) 
-                                                for ann in sample.tom_annotations]
-                                    logger.info(f"[{task_type.upper()}] DoM levels used: {set(dom_levels)}")
-                            
+                                    logger.info(
+                                        f"[{task_type.upper()}] ToM errors detected & corrected: {errors_count}"
+                                    )
+
+                                    dom_levels = [
+                                        ann.get("step1_decision", {}).get(
+                                            "dom_level", 0
+                                        )
+                                        for ann in sample.tom_annotations
+                                    ]
+                                    logger.info(
+                                        f"[{task_type.upper()}] DoM levels used: {set(dom_levels)}"
+                                    )
+
                             time.sleep(delay)
-                            
+
                     except Exception as e:
                         logger.error(f"Processing sample {idx}: {e}")
                         continue
-        
+
         logger.info("ToM-based dataset generation completed!")
         logger.info(f"Output files saved to: {output_dir}")
         for task in task_types:

@@ -9,29 +9,29 @@ ToM推理模块 - 严格落地论文1+2核心方案
 import json
 import re
 import time
-from typing import Dict, List, Any, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-from tom_models import (
-    ToMReasoning,
-    MentalState,
-    CausalEvent,
-    TemporalMentalTrajectory,
-    TemporalChainLink,
-    MentalBoundary,
-    DialogueTurn,
-    DoMLevel,
-    TaskType
-)
-from tom_error_detector import ToMErrorDetector
 from config import (
-    config,
     FIRST_ORDER_SIGNALS,
     NEEDS_TOM_SIGNALS,
-    SIMPLE_ACKNOWLEDGMENT_PATTERNS
+    SIMPLE_ACKNOWLEDGMENT_PATTERNS,
+    config,
 )
-from utils import format_dialogue_history, safe_json_loads, APIError
-from logger import get_logger
 from llm_provider import BaseLLMProvider
+from logger import get_logger
+from tom_error_detector import ToMErrorDetector
+from tom_models import (
+    CausalEvent,
+    DialogueTurn,
+    DoMLevel,
+    MentalBoundary,
+    MentalState,
+    TaskType,
+    TemporalChainLink,
+    TemporalMentalTrajectory,
+    ToMReasoning,
+)
+from utils import APIError, format_dialogue_history, safe_json_loads
 
 logger = get_logger()
 
@@ -39,16 +39,17 @@ logger = get_logger()
 class ToMReasoningModule:
     """
     ToM 推理模块
-    
+
     功能：
     - 实现双步骤 ToM 推理
     - 动态时序心智轨迹追踪
     - 错误检测和修正
     """
+
     def __init__(self, llm_provider: BaseLLMProvider):
         """
         初始化 ToM 推理模块
-        
+
         参数：
         - llm_provider: LLM 提供者实例
         """
@@ -61,7 +62,7 @@ class ToMReasoningModule:
         self,
         context: Dict[str, Any],
         dialogue_history: List[DialogueTurn],
-        task_type: str
+        task_type: str,
     ) -> Tuple[bool, int, str]:
         """
         Step1 ToM 调用决策 - 使用 LLM 进行决策
@@ -70,7 +71,7 @@ class ToMReasoningModule:
         - context: 上下文信息
         - dialogue_history: 对话历史
         - task_type: 任务类型
-        
+
         返回：
         - Tuple[bool, int, str]: (是否调用ToM, DoM水平, 决策理由)
         """
@@ -256,19 +257,31 @@ OUTPUT FORMAT (JSON):
             response = self.llm_provider.generate_chat(
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=config.llm.max_tokens,
-                temperature=config.llm.temperature
+                temperature=config.llm.temperature,
             )
-            
-            result = safe_json_loads(response.content)
+
+            # 修复：先剥离 Markdown，再尝试原生解析
+            from utils import extract_json_from_response, safe_json_loads
+
+            result = extract_json_from_response(response.content)
+            if not result:
+                result = safe_json_loads(response.content)
+
             if not result:
                 raise APIError("Failed to parse LLM response as JSON")
             
             # 构建心智边界
             mental_boundary = MentalBoundary(
                 doctor_known=result.get("mental_boundary", {}).get("doctor_known", []),
-                doctor_unknown=result.get("mental_boundary", {}).get("doctor_unknown", []),
-                patient_known=result.get("mental_boundary", {}).get("patient_known", []),
-                patient_knowledge_gaps=result.get("mental_boundary", {}).get("patient_knowledge_gaps", [])
+                doctor_unknown=result.get("mental_boundary", {}).get(
+                    "doctor_unknown", []
+                ),
+                patient_known=result.get("mental_boundary", {}).get(
+                    "patient_known", []
+                ),
+                patient_knowledge_gaps=result.get("mental_boundary", {}).get(
+                    "patient_knowledge_gaps", []
+                ),
             )
             
             # 构建患者心理状态
@@ -276,7 +289,9 @@ OUTPUT FORMAT (JSON):
                 beliefs=result.get("patient_mental_state", {}).get("beliefs", []),
                 emotions=result.get("patient_mental_state", {}).get("emotions", []),
                 intentions=result.get("patient_mental_state", {}).get("intentions", []),
-                knowledge_gaps=result.get("patient_mental_state", {}).get("knowledge_gaps", [])
+                knowledge_gaps=result.get("patient_mental_state", {}).get(
+                    "knowledge_gaps", []
+                ),
             )
             
             # 构建时序链
@@ -338,5 +353,5 @@ OUTPUT FORMAT (JSON):
                 dom_level=dom_level,
                 step1_decision_reason=f"Inference error occurred: {str(e)}",
                 mental_boundary=MentalBoundary(),
-                patient_mental_state=MentalState()
+                patient_mental_state=MentalState(),
             )
